@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QR Code Scanner</title>
+    <title>Unique Code Scanner</title>
     <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
         body { background: #f5f5f5; padding: 20px; }
@@ -23,6 +23,29 @@
         .stop-btn:hover { background: #d32f2f; }
         .permission-help { margin-top: 20px; padding: 15px; background: #fff8e1; border-radius: 5px; text-align: left; display: none; }
         .camera-icon { font-size: 50px; margin-bottom: 10px; color: #757575; }
+        .scanning-area { 
+            position: absolute; 
+            top: 50%; 
+            left: 50%; 
+            transform: translate(-50%, -50%); 
+            width: 80%; 
+            height: 60px; 
+            border: 3px solid #27ae60; 
+            background: rgba(39, 174, 96, 0.1);
+            z-index: 10;
+        }
+        .scan-line {
+            position: absolute;
+            width: 100%;
+            height: 3px;
+            background: #27ae60;
+            animation: scan 2s infinite;
+        }
+        @keyframes scan {
+            0% { top: 0; }
+            50% { top: calc(100% - 3px); }
+            100% { top: 0; }
+        }
         @media (max-width: 768px) {
             #scanner-container { width: 250px; height: 250px; }
         }
@@ -30,8 +53,8 @@
 </head>
 <body>
     <div class="container">
-        <h1>QR Code Scanner</h1>
-        <p>Scan attendee's registration QR code to mark them as present</p>
+        <h1>Unique Code Scanner</h1>
+        <p>Scan attendee's unique registration codes to mark them as present</p>
         
         <div id="scanner-container">
             <div id="scanner-placeholder">
@@ -40,12 +63,20 @@
             </div>
             <video id="scanner-video" playsinline></video>
             <canvas id="scanner-canvas"></canvas>
+            <div class="scanning-area">
+                <div class="scan-line"></div>
+            </div>
         </div>
         
         <div id="scan-result">Click "Start Scanner" to begin</div>
         
         <button id="startBtn" class="scan-btn" onclick="startScanner()">Start Scanner</button>
         <button id="stopBtn" class="stop-btn" onclick="stopScanner()" disabled>Stop Scanner</button>
+        
+        <div class="manual-input" style="margin-top: 20px;">
+            <input type="text" id="manualCode" placeholder="Or enter code manually" style="padding: 10px; width: 200px; border: 1px solid #ccc; border-radius: 5px;">
+            <button onclick="processManualCode()" style="padding: 10px; margin-left: 10px; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer;">Submit</button>
+        </div>
         
         <div id="permissionHelp" class="permission-help">
             <h3>Having camera permission issues?</h3>
@@ -76,6 +107,7 @@
         let scannerInterval;
         let videoStream;
         let allRegistrations = [];
+        let isProcessing = false;
         
         // Load registration data
         database.ref('registrations').on('value', (snapshot) => {
@@ -89,7 +121,7 @@
             const context = canvas.getContext('2d');
             const resultDiv = document.getElementById('scan-result');
             const placeholder = document.getElementById('scanner-placeholder');
-            const permissionHelp = document.getElementById('permission-help');
+            const permissionHelp = document.getElementById('permissionHelp');
             
             document.getElementById('startBtn').disabled = true;
             document.getElementById('stopBtn').disabled = false;
@@ -111,24 +143,45 @@
                 video.srcObject = stream;
                 video.play();
                 
-                resultDiv.textContent = 'Scanning for QR codes...';
+                resultDiv.textContent = 'Scanning for codes... Point camera at text/number codes';
                 
                 scannerInterval = setInterval(() => {
-                    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                    if (video.readyState === video.HAVE_ENOUGH_DATA && !isProcessing) {
+                        isProcessing = true;
                         canvas.width = video.videoWidth;
                         canvas.height = video.videoHeight;
                         context.drawImage(video, 0, 0, canvas.width, canvas.height);
                         
-                        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-                        const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                            inversionAttempts: "dontInvert",
-                        });
+                        // Extract the scanning area (center portion)
+                        const scanX = canvas.width * 0.1;
+                        const scanY = canvas.height * 0.4;
+                        const scanWidth = canvas.width * 0.8;
+                        const scanHeight = 60;
                         
-                        if (code) {
-                            processScannedCode(code.data);
-                        }
+                        const imageData = context.getImageData(scanX, scanY, scanWidth, scanHeight);
+                        
+                        // Use Tesseract.js for OCR text recognition
+                        Tesseract.recognize(
+                            imageData,
+                            'eng',
+                            { 
+                                logger: message => console.log(message),
+                                tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-'
+                            }
+                        ).then(result => {
+                            const detectedText = result.data.text.trim();
+                            console.log('Detected text:', detectedText);
+                            
+                            if (detectedText && detectedText.length >= 3) {
+                                processScannedCode(detectedText);
+                            }
+                        }).catch(err => {
+                            console.error('OCR error:', err);
+                        }).finally(() => {
+                            isProcessing = false;
+                        });
                     }
-                }, 200);
+                }, 3000); // Scan every 3 seconds to avoid over-processing
             })
             .catch(function(err) {
                 console.error('Camera error:', err);
@@ -138,10 +191,10 @@
                 document.getElementById('stopBtn').disabled = true;
                 
                 if (err.name === 'NotAllowedError') {
-                    resultDiv.innerHTML = `<span style="color: #e74c3c;">Camera access denied. Please allow camera permissions.</span>`;
-                    document.getElementById('permission-help').style.display = 'block';
+                    resultDiv.innerHTML = '<span style="color: #e74c3c;">Camera access denied. Please allow camera permissions.</span>';
+                    permissionHelp.style.display = 'block';
                 } else if (err.name === 'NotFoundError') {
-                    resultDiv.innerHTML = `<span style="color: #e74c3c;">No camera found on this device.</span>`;
+                    resultDiv.innerHTML = '<span style="color: #e74c3c;">No camera found on this device.</span>';
                 } else {
                     resultDiv.innerHTML = `<span style="color: #e74c3c;">Error accessing camera: ${err.message}</span>`;
                 }
@@ -164,42 +217,57 @@
             document.getElementById('startBtn').disabled = false;
             document.getElementById('stopBtn').disabled = true;
             document.getElementById('scan-result').textContent = 'Scanner stopped. Click "Start Scanner" to begin.';
-            document.getElementById('permission-help').style.display = 'none';
+            document.getElementById('permissionHelp').style.display = 'none';
         }
 
         function processScannedCode(code) {
             const resultDiv = document.getElementById('scan-result');
+            const cleanCode = code.replace(/\s+/g, '').toUpperCase();
             
-            // Check if the code matches our expected format
-            if (code.startsWith("UTTPHOTO2025-")) {
-                const id = code.replace("UTTPHOTO2025-", "");
-                const attendee = allRegistrations.find(reg => reg.id.toString() === id);
-                
-                if (attendee) {
-                    if (attendee.attended) {
-                        resultDiv.innerHTML = `<span style="color: #27ae60;">${attendee.name} (ID: ${attendee.id}) has already been marked as attended</span>`;
-                    } else {
-                        resultDiv.innerHTML = `Found: ${attendee.name} (ID: ${attendee.id})`;
-                        if (confirm(`Mark ${attendee.name} (ID: ${attendee.id}) as attended?`)) {
-                            database.ref('registrations/' + attendee.mobile).update({
-                                attended: true
-                            }).then(() => {
-                                resultDiv.innerHTML = `<span style="color: #27ae60;">Successfully marked ${attendee.name} as attended!</span>`;
-                            }).catch(error => {
-                                resultDiv.innerHTML = `<span style="color: #e74c3c;">Error: ${error.message}</span>`;
-                            });
-                        }
-                    }
+            resultDiv.innerHTML = `Detected: <strong>${cleanCode}</strong>`;
+            
+            // Check if the code matches our expected format or any registration ID
+            const attendee = allRegistrations.find(reg => 
+                reg.id.toString() === cleanCode || 
+                reg.mobile === cleanCode ||
+                (reg.name && reg.name.toUpperCase().includes(cleanCode))
+            );
+            
+            if (attendee) {
+                if (attendee.attended) {
+                    resultDiv.innerHTML += `<br><span style="color: #27ae60;">${attendee.name} (ID: ${attendee.id}) has already been marked as attended</span>`;
                 } else {
-                    resultDiv.innerHTML = `<span style="color: #e74c3c;">No registration found with ID: ${id}</span>`;
+                    resultDiv.innerHTML += `<br><span style="color: #2980b9;">Found: ${attendee.name} (ID: ${attendee.id})</span>`;
+                    if (confirm(`Mark ${attendee.name} (ID: ${attendee.id}) as attended?`)) {
+                        database.ref('registrations/' + attendee.mobile).update({
+                            attended: true,
+                            attended_at: new Date().toISOString()
+                        }).then(() => {
+                            resultDiv.innerHTML += `<br><span style="color: #27ae60;">✅ Successfully marked ${attendee.name} as attended!</span>`;
+                        }).catch(error => {
+                            resultDiv.innerHTML += `<br><span style="color: #e74c3c;">Error: ${error.message}</span>`;
+                        });
+                    }
                 }
             } else {
-                resultDiv.innerHTML = `<span style="color: #e74c3c;">Invalid QR code. Please scan a valid registration QR code.</span>`;
+                resultDiv.innerHTML += `<br><span style="color: #e74c3c;">No registration found for code: ${cleanCode}</span>`;
             }
         }
 
-        // Don't start automatically - let user click the button
-        // This gives better permission request timing
+        function processManualCode() {
+            const manualCode = document.getElementById('manualCode').value.trim();
+            if (manualCode) {
+                processScannedCode(manualCode);
+                document.getElementById('manualCode').value = '';
+            }
+        }
+
+        // Add keyboard shortcut for manual input
+        document.getElementById('manualCode').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                processManualCode();
+            }
+        });
     </script>
 </body>
 </html>
